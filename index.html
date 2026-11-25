@@ -4,6 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Wheel Controll</title>
+  <link rel="manifest" href="manifest.json" />
+  <meta name="theme-color" content="#121212" />
   <style>
     body {
       background-color: #121212;
@@ -94,6 +96,10 @@
   </div>
 
   <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('sw.js');
+    }
+
     let device = null;
     let txChar = null;
     let timerInterval = null;
@@ -111,7 +117,6 @@
     const startTimerBtn = document.getElementById('startTimerBtn');
     const stopBtn = document.getElementById('stopBtn');
 
-    // Standardowe UUID usług UART wykorzystywanych przez Lovense
     const UART_SERVICES = [
       '50300001-0023-4bd4-bbd5-a6920e4c5653',
       '53300001-0023-4bd4-bbd5-a6920e4c5653',
@@ -134,7 +139,7 @@
 
     async function setPowerPercent(percent) {
       const clamped = Math.max(0, Math.min(100, percent));
-      const level = Math.round(clamped * 0.2); // Skala 0-20
+      const level = Math.round(clamped * 0.2);
       await sendCommand(`Vibrate:${level};`);
     }
 
