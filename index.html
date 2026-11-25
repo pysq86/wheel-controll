@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Wheel Controll</title>
+  <style>
+    body {
+      background-color: #121212;
+      color: #ffffff;
+      font-family: system-ui, -apple-system, sans-serif;
+      margin: 0;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      max-width: 480px;
+      margin-inline: auto;
+    }
+    .card {
+      background: #1e1e1e;
+      padding: 16px;
+      border-radius: 12px;
+      border: 1px solid #333;
+    }
+    h1 { margin: 0 0 8px 0; font-size: 24px; }
+    h2 { margin: 0 0 12px 0; font-size: 16px; color: #bbb; }
+    button {
+      background: #bb86fc;
+      color: #000;
+      border: none;
+      padding: 14px;
+      border-radius: 8px;
+      font-size: 16px;
+      font-weight: bold;
+      cursor: pointer;
+      width: 100%;
+    }
+    button.danger { background: #cf6679; color: #000; }
+    button.outline { background: transparent; border: 1px solid #bb86fc; color: #bb86fc; }
+    input[type="range"] { width: 100%; height: 32px; accent-color: #bb86fc; }
+    .row { display: flex; gap: 10px; }
+    .field { flex: 1; display: flex; flex-direction: column; gap: 6px; }
+    input[type="number"] {
+      background: #2c2c2c;
+      border: 1px solid #444;
+      color: #fff;
+      padding: 12px;
+      border-radius: 8px;
+      font-size: 18px;
+      width: 100%;
+      box-sizing: border-box;
+    }
+    .status { font-weight: bold; color: #03dac6; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <h1>Wheel Controll</h1>
+
+  <div class="card">
+    <div>Status: <span id="statusText" class="status">Rozłączono</span></div>
+    <div id="batteryBox" class="hidden" style="margin-top: 6px;">Bateria: <strong id="batteryText">--%</strong></div>
+    <div style="margin-top: 12px;">
+      <button id="connectBtn">Połącz z urządzeniem (BLE)</button>
+      <button id="disconnectBtn" class="danger hidden">Rozłącz urządzenie</button>
+    </div>
+  </div>
+
+  <div id="controlPanel" class="hidden" style="display: flex; flex-direction: column; gap: 16px;">
+    <div class="card">
+      <h2>Sterowanie płynne (Suwak)</h2>
+      <input type="range" id="powerSlider" min="0" max="100" value="0" />
+      <div style="margin-top: 8px;">Aktualna moc: <strong id="sliderVal">0%</strong></div>
+    </div>
+
+    <div class="card">
+      <h2>Tryb precyzyjny (Moc % + Czas)</h2>
+      <div class="row">
+        <div class="field">
+          <label for="inputPercent">Moc (%)</label>
+          <input type="number" id="inputPercent" min="0" max="100" value="50" />
+        </div>
+        <div class="field">
+          <label for="inputSeconds">Czas (sekundy)</label>
+          <input type="number" id="inputSeconds" min="1" max="3600" value="30" />
+        </div>
+      </div>
+      <div class="row" style="margin-top: 14px;">
+        <button id="startTimerBtn">Uruchom cykl</button>
+        <button id="stopBtn" class="outline">STOP (0%)</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let device = null;
+    let txChar = null;
+    let timerInterval = null;
+
+    const statusText = document.getElementById('statusText');
+    const batteryBox = document.getElementById('batteryBox');
+    const batteryText = document.getElementById('batteryText');
+    const connectBtn = document.getElementById('connectBtn');
+    const disconnectBtn = document.getElementById('disconnectBtn');
+    const controlPanel = document.getElementById('controlPanel');
+    const powerSlider = document.getElementById('powerSlider');
+    const sliderVal = document.getElementById('sliderVal');
+    const inputPercent = document.getElementById('inputPercent');
+    const inputSeconds = document.getElementById('inputSeconds');
+    const startTimerBtn = document.getElementById('startTimerBtn');
+    const stopBtn = document.getElementById('stopBtn');
+
+    // Standardowe UUID usług UART wykorzystywanych przez Lovense
+    const UART_SERVICES = [
+      '50300001-0023-4bd4-bbd5-a6920e4c5653',
+      '53300001-0023-4bd4-bbd5-a6920e4c5653',
+      '45440001-0023-4bd4-bbd5-a6920e4c5653',
+      '42300001-0023-4bd4-bbd5-a6920e4c5653',
+      '5a300001-0023-4bd4-bbd5-a6920e4c5653',
+      '57300001-0023-4bd4-bbd5-a6920e4c5653',
+      '6e400001-b5a3-f393-e0a9-e50e24dcca9e'
+    ];
+
+    async function sendCommand(cmd) {
+      if (!txChar) return;
+      const encoder = new TextEncoder();
+      try {
+        await txChar.writeValue(encoder.encode(cmd));
+      } catch (err) {
+        console.error('Błąd wysyłania:', err);
+      }
+    }
+
+    async function setPowerPercent(percent) {
+      const clamped = Math.max(0, Math.min(100, percent));
+      const level = Math.round(clamped * 0.2); // Skala 0-20
+      await sendCommand(`Vibrate:${level};`);
+    }
+
+    connectBtn.addEventListener('click', async () => {
+      try {
+        statusText.textContent = 'Szukanie...';
+        device = await navigator.bluetooth.requestDevice({
+          filters: [{ namePrefix: 'LVS-' }],
+          optionalServices: UART_SERVICES
+        });
+
+        device.addEventListener('gattserverdisconnected', onDisconnected);
+        statusText.textContent = 'Łączenie...';
+        const server = await device.gatt.connect();
+        const services = await server.getPrimaryServices();
+
+        for (const service of services) {
+          const chars = await service.getCharacteristics();
+          for (const char of chars) {
+            if (char.properties.write || char.properties.writeWithoutResponse) {
+              txChar = char;
+            }
+            if (char.properties.notify) {
+              await char.startNotifications();
+              char.addEventListener('characteristicvaluechanged', (e) => {
+                const val = new TextDecoder().decode(e.target.value).trim();
+                if (val.endsWith(';')) {
+                  const num = val.slice(0, -1);
+                  if (!isNaN(num)) batteryText.textContent = `${num}%`;
+                }
+              });
+            }
+          }
+        }
+
+        statusText.textContent = `Połączono: ${device.name}`;
+        connectBtn.classList.add('hidden');
+        disconnectBtn.classList.remove('hidden');
+        batteryBox.classList.remove('hidden');
+        controlPanel.style.display = 'flex';
+
+        setTimeout(() => sendCommand('Battery;'), 500);
+      } catch (error) {
+        statusText.textContent = 'Anulowano lub brak urządzenia';
+        console.error(error);
+      }
+    });
+
+    function onDisconnected() {
+      clearInterval(timerInterval);
+      startTimerBtn.textContent = 'Uruchom cykl';
+      statusText.textContent = 'Rozłączono';
+      connectBtn.classList.remove('hidden');
+      disconnectBtn.classList.add('hidden');
+      batteryBox.classList.add('hidden');
+      controlPanel.style.display = 'none';
+      txChar = null;
+    }
+
+    disconnectBtn.addEventListener('click', async () => {
+      await setPowerPercent(0);
+      if (device && device.gatt.connected) {
+        device.gatt.disconnect();
+      }
+    });
+
+    powerSlider.addEventListener('input', async (e) => {
+      clearInterval(timerInterval);
+      startTimerBtn.textContent = 'Uruchom cykl';
+      const val = parseInt(e.target.value, 10);
+      sliderVal.textContent = `${val}%`;
+      await setPowerPercent(val);
+    });
+
+    startTimerBtn.addEventListener('click', async () => {
+      clearInterval(timerInterval);
+      const targetPercent = Math.max(0, Math.min(100, parseInt(inputPercent.value, 10) || 0));
+      let remaining = Math.max(1, parseInt(inputSeconds.value, 10) || 1);
+
+      powerSlider.value = targetPercent;
+      sliderVal.textContent = `${targetPercent}%`;
+      await setPowerPercent(targetPercent);
+      startTimerBtn.textContent = `Pozostało: ${remaining}s`;
+
+      timerInterval = setInterval(async () => {
+        remaining--;
+        if (remaining > 0) {
+          startTimerBtn.textContent = `Pozostało: ${remaining}s`;
+        } else {
+          clearInterval(timerInterval);
+          startTimerBtn.textContent = 'Uruchom cykl';
+          powerSlider.value = 0;
+          sliderVal.textContent = '0%';
+          await setPowerPercent(0);
+        }
+      }, 1000);
+    });
+
+    stopBtn.addEventListener('click', async () => {
+      clearInterval(timerInterval);
+      startTimerBtn.textContent = 'Uruchom cykl';
+      powerSlider.value = 0;
+      sliderVal.textContent = '0%';
+      await setPowerPercent(0);
+    });
+  </script>
+</body>
+</html>
